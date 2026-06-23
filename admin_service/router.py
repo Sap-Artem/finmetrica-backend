@@ -13,5 +13,5 @@ router = APIRouter()
 async def get_all_users(current_user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Требуются права администратора")
-    users = (await session.exec(select(User))).scalars().all()
+    users = (await session.exec(select(User))).all()
     return users

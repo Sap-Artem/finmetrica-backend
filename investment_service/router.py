@@ -6,7 +6,6 @@ from sqlmodel import select
 from sqlalchemy import func
 from pydantic import BaseModel
 import json
-from typing import List
 
 from dal.database import get_session
 from dal.models.users import User, RiskAssessmentTest, RiskLevel
@@ -35,7 +34,7 @@ async def submit_risk_test(test_in: RiskTestSubmit, current_user: User = Depends
 @router.get("/recommendation/history")
 async def get_recommendation_history(current_user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     statement = select(InvestmentRecommendation).where(InvestmentRecommendation.client_id == current_user.id).order_by(InvestmentRecommendation.generated_at.desc())
-    history = (await session.exec(statement)).scalars().all()
+    history = (await session.exec(statement)).all()
     return history
 
 @router.get("/recommendation/generate")
@@ -48,13 +47,13 @@ async def generate_ai_recommendation(current_user: User = Depends(get_current_us
         await redis_client.aclose()
         return json.loads(cached_rec)
     
-    acc_ids = (await session.exec(select(Account.id).where(Account.client_id == current_user.id))).scalars().all()
+    acc_ids = (await session.exec(select(Account.id).where(Account.client_id == current_user.id))).all()
     if not acc_ids:
         await redis_client.aclose()
         raise HTTPException(status_code=400, detail="Нет счетов для анализа")
 
-    income = (await session.exec(select(func.sum(Transaction.amount)).where(Transaction.account_id.in_(acc_ids), Transaction.type == TransactionType.INCOME))).scalar() or 0
-    expense = (await session.exec(select(func.sum(Transaction.amount)).where(Transaction.account_id.in_(acc_ids), Transaction.type == TransactionType.EXPENSE))).scalar() or 0
+    income = (await session.exec(select(func.sum(Transaction.amount)).where(Transaction.account_id.in_(acc_ids), Transaction.type == TransactionType.INCOME))).first() or 0
+    expense = (await session.exec(select(func.sum(Transaction.amount)).where(Transaction.account_id.in_(acc_ids), Transaction.type == TransactionType.EXPENSE))).first() or 0
     
     surplus = (income - expense) / 100
     prompt = f"У пользователя профицит: {surplus} руб. Риск-профиль: {current_user.risk_profile.value}. Дай инвест-совет."

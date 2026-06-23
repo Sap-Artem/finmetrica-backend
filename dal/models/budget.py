@@ -1,6 +1,6 @@
 import uuid
 import enum
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional
 from sqlmodel import SQLModel, Field
 
@@ -18,12 +18,12 @@ class AccountBase(SQLModel):
     name: str
     type: AccountType
     currency: str = Field(default="RUB")
-    balance: int = Field(default=0)
 
 class Account(AccountBase, table=True):
     __tablename__ = "accounts"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     client_id: uuid.UUID = Field(foreign_key="users.id")
+    balance: int = Field(default=0)
 
 class AccountCreate(AccountBase):
     pass
@@ -68,8 +68,14 @@ class TransactionBase(SQLModel):
 class Transaction(TransactionBase, table=True):
     __tablename__ = "transactions"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    date: datetime = Field(default_factory=datetime.utcnow)
+    date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 class TransactionCreate(TransactionBase):
+    date: Optional[datetime] = None
+
+class TransactionUpdate(SQLModel):
+    amount: Optional[int] = None
+    type: Optional[TransactionType] = None
+    note: Optional[str] = None
     category_id: Optional[uuid.UUID] = None
     date: Optional[datetime] = None

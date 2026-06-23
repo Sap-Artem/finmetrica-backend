@@ -1,3 +1,4 @@
+import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
@@ -7,7 +8,10 @@ from datetime import datetime, timezone
 
 from dal.database import get_session
 from dal.models.users import User
-from dal.models.budget import Account, AccountCreate, Transaction, TransactionCreate, BudgetLimit, Category, FinancialGoal, FinancialGoalCreate, TransactionType
+from dal.models.budget import (
+    Account, AccountCreate, Transaction, TransactionCreate, TransactionUpdate, 
+    BudgetLimit, Category, FinancialGoal, FinancialGoalCreate, TransactionType
+)
 from auth_service.security import get_current_user
 
 router = APIRouter()
@@ -15,7 +19,7 @@ router = APIRouter()
 # --- Справочники ---
 @router.get("/categories")
 async def get_categories(session: AsyncSession = Depends(get_session)):
-    categories = (await session.exec(select(Category))).scalars().all()
+    categories = (await session.exec(select(Category))).all()
     return categories
 
 # --- Счета и Транзакции ---
@@ -34,17 +38,58 @@ async def create_transaction(tx_in: TransactionCreate, current_user: User = Depe
         raise HTTPException(status_code=403, detail="Доступ к счету запрещен")
         
     new_tx = Transaction(**tx_in.model_dump())
-    
-    if new_tx.type == TransactionType.INCOME:
-        account.balance += new_tx.amount
-    else:
-        account.balance -= new_tx.amount
+    if new_tx.type == TransactionType.INCOME: account.balance += new_tx.amount
+    else: account.balance -= new_tx.amount
         
     session.add(new_tx)
     session.add(account)
     await session.commit()
     await session.refresh(new_tx)
     return new_tx
+
+@router.put("/transactions/{tx_id}", response_model=Transaction)
+async def update_transaction(tx_id: uuid.UUID, tx_update: TransactionUpdate, current_user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    tx = await session.get(Transaction, tx_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Транзакция не найдена")
+        
+    account = await session.get(Account, tx.account_id)
+    if not account or account.client_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+
+    if tx.type == TransactionType.INCOME: account.balance -= tx.amount
+    else: account.balance += tx.amount
+
+    update_data = tx_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(tx, key, value)
+
+    if tx.type == TransactionType.INCOME: account.balance += tx.amount
+    else: account.balance -= tx.amount
+
+    session.add(tx)
+    session.add(account)
+    await session.commit()
+    await session.refresh(tx)
+    return tx
+
+@router.delete("/transactions/{tx_id}")
+async def delete_transaction(tx_id: uuid.UUID, current_user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    tx = await session.get(Transaction, tx_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Транзакция не найдена")
+        
+    account = await session.get(Account, tx.account_id)
+    if not account or account.client_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+
+    if tx.type == TransactionType.INCOME: account.balance -= tx.amount
+    else: account.balance += tx.amount
+
+    await session.delete(tx)
+    session.add(account)
+    await session.commit()
+    return {"status": "success", "detail": "Транзакция удалена"}
 
 @router.post("/sync", response_model=dict)
 async def sync_offline_transactions(transactions_in: List[TransactionCreate], current_user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
@@ -53,10 +98,8 @@ async def sync_offline_transactions(transactions_in: List[TransactionCreate], cu
         account = await session.get(Account, tx_in.account_id)
         if account and account.client_id == current_user.id:
             new_tx = Transaction(**tx_in.model_dump())
-            if new_tx.type == TransactionType.INCOME:
-                account.balance += new_tx.amount
-            else:
-                account.balance -= new_tx.amount
+            if new_tx.type == TransactionType.INCOME: account.balance += new_tx.amount
+            else: account.balance -= new_tx.amount
             session.add(new_tx)
             session.add(account)
             added_count += 1
@@ -78,7 +121,7 @@ async def get_monthly_analytics(current_user: User = Depends(get_current_user), 
     current_month, current_year = datetime.now(timezone.utc).month, datetime.now(timezone.utc).year
     
     stmt_accs = select(Account.id).where(Account.client_id == current_user.id)
-    acc_ids = (await session.exec(stmt_accs)).scalars().all()
+    acc_ids = (await session.exec(stmt_accs)).all()
     
     if not acc_ids:
         return {"expenses_by_category": [], "total_income": 0, "total_expense": 0}
@@ -96,7 +139,7 @@ async def get_monthly_analytics(current_user: User = Depends(get_current_user), 
         Transaction.account_id.in_(acc_ids), Transaction.type == TransactionType.INCOME,
         extract('month', Transaction.date) == current_month, extract('year', Transaction.date) == current_year
     )
-    total_income = (await session.exec(stmt_inc)).scalar() or 0
+    total_income = (await session.exec(stmt_inc)).first() or 0
     
     return {"period": f"{current_month:02d}-{current_year}", "total_income": total_income, "total_expense": total_expense, "expenses_by_category": expenses_by_cat}
 
@@ -104,8 +147,8 @@ async def get_monthly_analytics(current_user: User = Depends(get_current_user), 
 @router.get("/limits/progress")
 async def get_limits_progress(current_user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     current_month, current_year = datetime.now(timezone.utc).month, datetime.now(timezone.utc).year
-    limits = (await session.exec(select(BudgetLimit).where(BudgetLimit.client_id == current_user.id))).scalars().all()
-    acc_ids = (await session.exec(select(Account.id).where(Account.client_id == current_user.id))).scalars().all()
+    limits = (await session.exec(select(BudgetLimit).where(BudgetLimit.client_id == current_user.id))).all()
+    acc_ids = (await session.exec(select(Account.id).where(Account.client_id == current_user.id))).all()
     
     result = []
     for limit in limits:
@@ -114,9 +157,10 @@ async def get_limits_progress(current_user: User = Depends(get_current_user), se
             Transaction.type == TransactionType.EXPENSE, extract('month', Transaction.date) == current_month,
             extract('year', Transaction.date) == current_year
         )
-        spent = (await session.exec(stmt_spent)).scalar() or 0
+        spent = (await session.exec(stmt_spent)).first() or 0
         result.append({
             "limit_id": str(limit.id), "category_id": str(limit.category_id),
             "amount_limit": limit.amount_limit, "amount_spent": spent, "is_exceeded": spent > limit.amount_limit
         })
     return {"month": current_month, "progress": result}
+
