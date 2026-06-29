@@ -1,3 +1,4 @@
+import uuid
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -39,10 +40,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSe
     )
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
+        user_id_str: str = payload.get("sub")
+        if user_id_str is None:
             raise credentials_exception
-    except JWTError:
+            
+        # ИСПРАВЛЕНИЕ: Преобразуем строку в строгий тип UUID, иначе asyncpg падает!
+        user_id = uuid.UUID(user_id_str)
+        
+    except (JWTError, ValueError):
         raise credentials_exception
         
     user = await session.get(User, user_id)
